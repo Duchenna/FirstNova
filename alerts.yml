@@ -1,0 +1,14 @@
+groups:
+  - name: novapay_alerts
+    rules:
+      - alert: HighErrorRateSpike
+        expr: |
+          sum(rate(novapay_http_requests_total{status=~"5.."}[2m])) 
+          / 
+          sum(rate(novapay_http_requests_total[2m])) * 100 > 5
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NovaPay high 5xx error rate detected"
+          description: "HTTP 5xx error rate exceeded 5% over the last 2 minutes."

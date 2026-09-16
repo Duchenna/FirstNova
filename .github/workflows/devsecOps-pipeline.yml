@@ -1,0 +1,102 @@
+name: NovaPay DevSecOps Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    name: Lint & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Run Linter
+        uses: golangci/golangci-lint-action@v4
+      - name: Run Tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+  sast-scan:
+    name: SAST Scan (CodeQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  secret-scan:
+    name: Secret Scan (Trufflehog)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trufflehog Secret Scan
+        uses: trufflesecurity/trufflehog-action@main
+        with:
+          extra_args: --failed
+
+  dependency-scan:
+    name: Dependency Vulnerability Scan (Trivy FS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Trivy FS Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  container-build-scan:
+    name: Build & Scan Container Image
+    needs: [lint-and-test, sast-scan, secret-scan, dependency-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker Image
+        run: docker build -t novapay-wallet:${{ github.sha }} .
+
+      - name: Run Trivy Image Scan (Fails on CRITICAL)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'novapay-wallet:${{ github.sha }}'
+          format: 'table'
+          exit-code: '1' # Fails the build on critical vulnerabilities
+          severity: 'CRITICAL'
+
+      - name: Verify Non-Root User Execution
+        run: |
+          USER_ID=$(docker run --rm novapay-wallet:${{ github.sha }} id -u)
+          if [ "$USER_ID" -eq 0 ]; then
+            echo "ERROR: Container runs as root!"
+            exit 1
+          else
+            echo "SUCCESS: Container runs as non-root UID $USER_ID"
+          fi
+
+  deploy-staging:
+    name: Deploy to Staging Target
+    needs: container-build-scan
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-west-1
+          role-to-assume: arn:aws:iam::123456789012:role/GitHubActionsStagingDeployRole
+      - name: Deploy Service
+        run: echo "Deploying container image to Staging environment..."
