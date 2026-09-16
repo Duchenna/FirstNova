@@ -1,2 +1,0 @@
-# FirstNova
-firstBank Nova App
